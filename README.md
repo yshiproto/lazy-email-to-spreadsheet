@@ -35,6 +35,6 @@ The tool writes to a Google Sheet with the following columns (template coming so
 
 ## thing i added to preserve my sanity
 
-cd /Users/yifanshi/lazy-email-to-spreadsheet
+cd /Users/placeholder/lazy-email-to-spreadsheet
 uv sync --extra dev
 uv run pytest
