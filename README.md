@@ -137,9 +137,27 @@ uv run lazy-email --since 2025-01-01 -v
 | `--spreadsheet-id` | Google Sheets URL or ID | Prompted if not set |
 | `--sheet-name` | Name of sheet tab to write to | Sheet1 |
 | `--model` | Ollama model to use | qwen2.5:3b |
-| `--max-emails` | Maximum emails to process | 100 |
+| `--max-emails` | Maximum emails to process | Unlimited |
 | `--reset` | Reset state and start fresh | - |
 | `-v, --verbose` | Enable verbose logging | - |
+
+## ⚠️ Important Notes
+
+### Credentials File
+When downloading OAuth credentials from Google Cloud Console, the file will be named something like `client_secret_XXXXX.json`. You **must** rename it to exactly `credentials.json` and place it in your project root folder:
+```bash
+mv ~/Downloads/client_secret_*.json ./credentials.json
+```
+
+### Large Email Volumes
+Processing many emails can take significant time since each email requires an LLM call. Consider:
+- Start with `--max-emails 50` for testing
+- The tool processes ~1-2 emails per second depending on your hardware
+- Processing 1000+ emails may take 10-20 minutes
+- The tool saves progress, so you can safely Ctrl+C and resume later
+
+### Spreadsheet Renaming
+After processing completes, the tool automatically appends the current date (MM/DD/YYYY) to your spreadsheet title to help you track when it was last updated.
 
 ## Ollama Auto-Start
 

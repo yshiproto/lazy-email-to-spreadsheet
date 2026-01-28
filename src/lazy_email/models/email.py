@@ -11,6 +11,54 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 
+# Default values for unknown fields
+DEFAULT_COMPANY_NAME = "DEFAULT (INPUT MANUALLY)"
+DEFAULT_ROLE = "SWE Default"
+
+
+def is_unknown_value(value: str) -> bool:
+    """Check if a value is considered 'unknown' or invalid.
+
+    Args:
+        value: The extracted value to check.
+
+    Returns:
+        True if the value should be treated as unknown.
+    """
+    if not value:
+        return True
+    # Handle case where LLM returns a list instead of string
+    if isinstance(value, list):
+        value = value[0] if value else ""
+    if not isinstance(value, str):
+        value = str(value)
+    lower = value.lower().strip()
+    unknown_patterns = [
+        "unknown",
+        "n/a",
+        "na",
+        "not specified",
+        "not found",
+        "not in email",
+        "not mentioned",
+        "cannot determine",
+        "could not determine",
+        "unclear",
+        "none",
+        "null",
+        "not available",
+        "",
+    ]
+    # Check exact matches and partial matches
+    if lower in unknown_patterns:
+        return True
+    # Check if any pattern is contained in the value
+    for pattern in ["not in email content", "cannot be determined", "not provided"]:
+        if pattern in lower:
+            return True
+    return False
+
+
 class ApplicationStatus(str, Enum):
     """Application status options matching the Google Sheet dropdown.
 
@@ -147,6 +195,7 @@ class EmailMessage(BaseModel):
 
     Attributes:
         message_id: The unique Gmail message ID.
+        subject: The email subject line.
         content: The email body content (plain text).
         date_sent: The date and time the email was sent.
         email_link: A direct link to the email in Gmail.
@@ -154,6 +203,7 @@ class EmailMessage(BaseModel):
     """
 
     message_id: str = Field(..., description="Unique Gmail message ID")
+    subject: str = Field(default="", description="Email subject line")
     content: str = Field(..., description="Email body content (plain text)")
     date_sent: datetime = Field(..., description="Date and time the email was sent")
     email_link: str = Field(..., description="Direct link to the email in Gmail")
@@ -190,8 +240,8 @@ class LLMExtractionResult(BaseModel):
         status_raw: The raw status string from the LLM.
     """
 
-    company_name: str = Field(default="Unknown", description="Extracted company name")
-    role: str = Field(default="Unknown", description="Extracted job role")
+    company_name: str = Field(default=DEFAULT_COMPANY_NAME, description="Extracted company name")
+    role: str = Field(default=DEFAULT_ROLE, description="Extracted job role")
     status_raw: str = Field(
         default="N/A",
         description="Raw status string before mapping to ApplicationStatus",

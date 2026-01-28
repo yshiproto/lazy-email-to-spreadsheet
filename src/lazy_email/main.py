@@ -147,8 +147,8 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-emails",
         type=int,
-        default=100,
-        help="Maximum number of emails to process (default: 100)",
+        default=None,
+        help="Maximum number of emails to process (default: unlimited)",
     )
 
     parser.add_argument(
@@ -479,6 +479,11 @@ def process_emails(
 
         if key in existing_apps:
             row_idx, current_status, _ = existing_apps[key]
+            # row_idx == 0 means it's an in-batch duplicate (not yet written to sheet)
+            if row_idx == 0:
+                # Skip in-batch duplicates - we'll just keep the first one
+                skipped_count += 1
+                continue
             if should_update_status(current_status, app.status):
                 # Update existing row with new status and email link
                 try:
@@ -491,7 +496,7 @@ def process_emails(
                 skipped_count += 1
         else:
             new_applications.append(app)
-            # Add to existing_apps to handle duplicates within this batch
+            # Add to existing_apps to handle duplicates within this batch (row_idx=0 marks as in-batch)
             existing_apps[key] = (0, app.status, app.email_link)
 
     if skipped_count > 0:
@@ -614,6 +619,13 @@ def main() -> int:
     print("  ✓ Processing complete!")
     print("=" * 60)
     print(f"\n{state_manager.get_progress_summary()}")
+
+    # Rename spreadsheet with current date
+    try:
+        sheets_client.rename_spreadsheet()
+        print("\n✓ Spreadsheet renamed with today's date.")
+    except Exception as e:
+        logger.warning(f"Could not rename spreadsheet: {e}")
 
     return 0
 

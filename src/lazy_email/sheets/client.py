@@ -6,6 +6,7 @@ appending job application data with automatic batching to respect rate limits.
 
 import logging
 import time
+from datetime import datetime
 from typing import Optional
 
 from googleapiclient.discovery import Resource
@@ -406,3 +407,50 @@ class SheetsClient:
             return max(0, len(values) - 1)
         except HttpError as e:
             raise SheetsClientError(f"Failed to get row count: {e}") from e
+
+    def rename_spreadsheet(self, date_suffix: Optional[str] = None) -> None:
+        """Rename the spreadsheet by appending a date suffix to the title.
+
+        Args:
+            date_suffix: Optional date string to append. Defaults to current date in MM/DD/YYYY format.
+
+        Raises:
+            SheetsClientError: If rename fails.
+        """
+        if date_suffix is None:
+            date_suffix = datetime.now().strftime("%m/%d/%Y")
+
+        try:
+            # Get current title
+            result = (
+                self.service.spreadsheets()
+                .get(spreadsheetId=self.spreadsheet_id)
+                .execute()
+            )
+            current_title = result.get("properties", {}).get("title", "Job Applications")
+
+            # Append date suffix (avoid duplicating if already has a date)
+            # Check if title already ends with a date pattern
+            import re
+            if re.search(r" - \d{2}/\d{2}/\d{4}$", current_title):
+                # Replace existing date
+                new_title = re.sub(r" - \d{2}/\d{2}/\d{4}$", f" - {date_suffix}", current_title)
+            else:
+                new_title = f"{current_title} - {date_suffix}"
+
+            # Update title using batchUpdate
+            self.service.spreadsheets().batchUpdate(
+                spreadsheetId=self.spreadsheet_id,
+                body={
+                    "requests": [{
+                        "updateSpreadsheetProperties": {
+                            "properties": {"title": new_title},
+                            "fields": "title"
+                        }
+                    }]
+                }
+            ).execute()
+
+            logger.info(f"Renamed spreadsheet to: {new_title}")
+        except HttpError as e:
+            raise SheetsClientError(f"Failed to rename spreadsheet: {e}") from e

@@ -13,10 +13,13 @@ from ollama import ResponseError
 
 from lazy_email.config import get_settings
 from lazy_email.models.email import (
+    DEFAULT_COMPANY_NAME,
+    DEFAULT_ROLE,
     ApplicationStatus,
     EmailMessage,
     JobApplication,
     LLMExtractionResult,
+    is_unknown_value,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,25 +78,33 @@ STATUS_MAPPINGS: dict[str, ApplicationStatus] = {
 }
 
 
-EXTRACTION_PROMPT = """You are a data extraction assistant. Extract job application information from the following email content.
+EXTRACTION_PROMPT = """You are a data extraction assistant. Extract job application information from this email.
+
+RULES (MUST FOLLOW):
+1. You MUST extract a company name. Look at the sender email domain, subject line, and email body.
+2. You MUST extract a job role. If unclear, default to "SWE Default".
+3. NEVER respond with "unknown", "n/a", "not specified", "not found", or similar for company_name or role.
+4. If you truly cannot find the company name, use exactly: "DEFAULT (INPUT MANUALLY)"
+5. If you truly cannot find the role, use exactly: "SWE Default"
 
 Extract these fields:
-1. company_name: The name of the company/employer (e.g., "Google", "Microsoft", "Acme Corp")
-2. role: The job title or position (e.g., "Software Engineer", "Data Scientist")
-3. status: The application status. Must be one of:
-   - "submitted" - Application was received/confirmed
-   - "rejected" - Application was declined
-   - "interview" - Interview invitation or scheduling
-   - "oa_invite" - Online assessment or coding challenge invitation
-   - "n/a" - Cannot determine status
+1. company_name: The employer name (check sender email like "@google.com" → "Google", or email signature/header)
+2. role: The job title (e.g., "Software Engineer", "Data Scientist", "SWE Intern")
+3. status: One of:
+   - "submitted" - Application received/confirmed
+   - "rejected" - Application declined
+   - "interview" - Interview invitation
+   - "oa_invite" - Online assessment/coding challenge
+   - "n/a" - Cannot determine status (ONLY use for status, never for company/role)
+
+SUBJECT: {subject}
+FROM: {sender}
 
 EMAIL CONTENT:
 {email_content}
 
-Respond with ONLY valid JSON in this exact format:
-{{"company_name": "...", "role": "...", "status": "..."}}
-
-If you cannot determine a field, use "Unknown" for company_name/role or "n/a" for status."""
+Respond with ONLY valid JSON:
+{{"company_name": "...", "role": "...", "status": "..."}}"""
 
 
 def _map_status_to_enum(status_raw: str) -> ApplicationStatus:
@@ -148,10 +159,33 @@ def _parse_llm_response(response_text: str) -> LLMExtractionResult:
 
     try:
         data = json.loads(text)
+        company = data.get("company_name", "")
+        role = data.get("role", "")
+        status = data.get("status", "n/a")
+
+        # Handle case where LLM returns a list instead of string
+        if isinstance(company, list):
+            company = company[0] if company else ""
+        if isinstance(role, list):
+            role = role[0] if role else ""
+        if isinstance(status, list):
+            status = status[0] if status else "n/a"
+
+        # Ensure string types
+        company = str(company) if company else ""
+        role = str(role) if role else ""
+        status = str(status) if status else "n/a"
+
+        # Apply default fallbacks for unknown values
+        if is_unknown_value(company):
+            company = DEFAULT_COMPANY_NAME
+        if is_unknown_value(role):
+            role = DEFAULT_ROLE
+
         return LLMExtractionResult(
-            company_name=data.get("company_name", "Unknown"),
-            role=data.get("role", "Unknown"),
-            status_raw=data.get("status", "n/a"),
+            company_name=company,
+            role=role,
+            status_raw=status,
         )
     except json.JSONDecodeError as e:
         logger.warning(f"Failed to parse LLM response as JSON: {e}")
@@ -241,11 +275,15 @@ class JobApplicationExtractor:
         except Exception as e:
             raise LLMExtractorError(f"Failed to call LLM: {e}") from e
 
-    def extract_from_content(self, content: str) -> LLMExtractionResult:
+    def extract_from_content(
+        self, content: str, subject: str = "", sender: str = ""
+    ) -> LLMExtractionResult:
         """Extract job application data from email content.
 
         Args:
             content: Email body text content.
+            subject: Email subject line.
+            sender: Sender email address.
 
         Returns:
             LLMExtractionResult with extracted fields.
@@ -253,7 +291,11 @@ class JobApplicationExtractor:
         Raises:
             LLMExtractorError: If extraction fails.
         """
-        prompt = EXTRACTION_PROMPT.format(email_content=content)
+        prompt = EXTRACTION_PROMPT.format(
+            email_content=content,
+            subject=subject or "(no subject)",
+            sender=sender or "(unknown sender)",
+        )
         response_text = self._call_llm(prompt)
         return _parse_llm_response(response_text)
 
@@ -272,8 +314,12 @@ class JobApplicationExtractor:
         Raises:
             LLMExtractorError: If extraction fails.
         """
-        # Extract using LLM
-        extraction = self.extract_from_content(email.content)
+        # Extract using LLM with subject and sender context
+        extraction = self.extract_from_content(
+            content=email.content,
+            subject=email.subject,
+            sender=email.sender,
+        )
 
         # Map status to enum
         status = _map_status_to_enum(extraction.status_raw)
@@ -307,11 +353,11 @@ class JobApplicationExtractor:
                 logger.info(f"Extracted: {application.company_name} - {application.role}")
             except LLMExtractorError as e:
                 logger.error(f"Failed to extract from email {email.message_id}: {e}")
-                # Create a fallback record with Unknown values
+                # Create a fallback record with default values
                 results.append(
                     JobApplication(
-                        company_name="Unknown",
-                        role="Unknown",
+                        company_name=DEFAULT_COMPANY_NAME,
+                        role=DEFAULT_ROLE,
                         status=ApplicationStatus.NA,
                         date_submitted=email.date_sent.strftime("%Y-%m-%d"),
                         email_link=email.email_link,

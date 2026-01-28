@@ -152,12 +152,46 @@ class GmailClient:
         wait=wait_exponential(multiplier=1, min=1, max=64),
         stop=stop_after_attempt(5),
     )
-    def _list_messages_with_retry(self, query: str, max_results: int = 100) -> list[dict[str, str]]:
-        """List message IDs matching query with rate limit retry.
+    def _list_messages_page(
+        self, query: str, max_results: int = 100, page_token: Optional[str] = None
+    ) -> tuple[list[dict[str, str]], Optional[str]]:
+        """List a single page of message IDs matching query.
 
         Args:
             query: Gmail search query string.
-            max_results: Maximum number of messages to return.
+            max_results: Maximum number of messages per page.
+            page_token: Token for fetching next page.
+
+        Returns:
+            Tuple of (messages list, next page token or None).
+
+        Raises:
+            GmailClientError: If API call fails after retries.
+        """
+        try:
+            request = self.service.users().messages().list(
+                userId=self.user_id, q=query, maxResults=max_results
+            )
+            if page_token:
+                request = self.service.users().messages().list(
+                    userId=self.user_id, q=query, maxResults=max_results, pageToken=page_token
+                )
+            results = request.execute()
+            return results.get("messages", []), results.get("nextPageToken")
+        except HttpError as e:
+            if e.resp.status in [429, 500, 503]:
+                # Retry on rate limit or server errors
+                raise
+            raise GmailClientError(f"Failed to list messages: {e}") from e
+
+    def _list_messages_with_retry(
+        self, query: str, max_results: Optional[int] = None
+    ) -> list[dict[str, str]]:
+        """List all message IDs matching query with pagination.
+
+        Args:
+            query: Gmail search query string.
+            max_results: Maximum number of messages to return. None = unlimited.
 
         Returns:
             List of message metadata dictionaries with 'id' and 'threadId'.
@@ -165,19 +199,23 @@ class GmailClient:
         Raises:
             GmailClientError: If API call fails after retries.
         """
-        try:
-            results = (
-                self.service.users()
-                .messages()
-                .list(userId=self.user_id, q=query, maxResults=max_results)
-                .execute()
-            )
-            return results.get("messages", [])
-        except HttpError as e:
-            if e.resp.status in [429, 500, 503]:
-                # Retry on rate limit or server errors
-                raise
-            raise GmailClientError(f"Failed to list messages: {e}") from e
+        all_messages: list[dict[str, str]] = []
+        page_token: Optional[str] = None
+        page_size = 100  # Gmail API max per page
+
+        while True:
+            messages, page_token = self._list_messages_page(query, page_size, page_token)
+            all_messages.extend(messages)
+
+            # Check if we've hit the user's limit
+            if max_results is not None and len(all_messages) >= max_results:
+                return all_messages[:max_results]
+
+            # No more pages
+            if not page_token:
+                break
+
+        return all_messages
 
     @retry(
         retry=retry_if_exception_type(HttpError),
@@ -247,6 +285,7 @@ class GmailClient:
             # Extract headers
             date_str = _extract_header_value(headers, "Date")
             sender = _extract_header_value(headers, "From")
+            subject = _extract_header_value(headers, "Subject")
 
             # Parse date
             try:
@@ -263,6 +302,7 @@ class GmailClient:
 
             return EmailMessage(
                 message_id=message_id,
+                subject=subject,
                 content=content,
                 date_sent=date_sent,
                 email_link=email_link,
@@ -272,14 +312,14 @@ class GmailClient:
             raise GmailClientError(f"Missing required field in message: {e}") from e
 
     def fetch_messages(
-        self, since_date: Optional[str] = None, max_results: int = 100
+        self, since_date: Optional[str] = None, max_results: Optional[int] = None
     ) -> list[EmailMessage]:
         """Fetch emails from primary inbox with optional date filter.
 
         Args:
             since_date: Optional date in YYYY-MM-DD format. Only emails
                        received on or after this date will be fetched.
-            max_results: Maximum number of emails to fetch (default: 100).
+            max_results: Maximum number of emails to fetch. None = unlimited.
 
         Returns:
             List of EmailMessage objects.
