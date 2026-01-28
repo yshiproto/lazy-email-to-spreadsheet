@@ -4,6 +4,7 @@ This module defines the data structures used throughout the application
 for representing email messages and extracted job application information.
 """
 
+import re
 from datetime import datetime
 from enum import Enum
 
@@ -21,6 +22,124 @@ class ApplicationStatus(str, Enum):
     INTERVIEW = "Interview"
     OA_INVITE = "OA Invite"
     NA = "N/A"
+
+
+# Status priority for determining which status "wins" when merging duplicates
+# Higher number = higher priority (more advanced in the application process)
+STATUS_PRIORITY: dict[ApplicationStatus, int] = {
+    ApplicationStatus.NA: 0,           # Unknown - never overwrites
+    ApplicationStatus.SUBMITTED: 1,    # Initial state
+    ApplicationStatus.OA_INVITE: 2,    # Further along than submitted
+    ApplicationStatus.INTERVIEW: 3,    # Further along than OA
+    ApplicationStatus.REJECTED: 4,     # Final outcome - always keep
+}
+
+
+def should_update_status(existing: ApplicationStatus, new: ApplicationStatus) -> bool:
+    """Determine if a new status should replace an existing status.
+
+    Args:
+        existing: The current status in the spreadsheet.
+        new: The newly extracted status from an email.
+
+    Returns:
+        True if the new status should replace the existing one.
+    """
+    return STATUS_PRIORITY.get(new, 0) > STATUS_PRIORITY.get(existing, 0)
+
+
+def normalize_company_name(name: str) -> str:
+    """Normalize company name for fuzzy matching.
+
+    Handles variations like:
+    - "Google" vs "Google LLC" vs "Google Inc" vs "Google, Inc."
+    - Case differences
+    - Extra whitespace
+
+    Args:
+        name: Raw company name.
+
+    Returns:
+        Normalized company name for comparison.
+    """
+    if not name:
+        return ""
+
+    # Convert to lowercase
+    normalized = name.lower().strip()
+
+    # Remove common suffixes
+    suffixes_to_remove = [
+        r",?\s*inc\.?$",
+        r",?\s*llc\.?$",
+        r",?\s*ltd\.?$",
+        r",?\s*corp\.?$",
+        r",?\s*corporation$",
+        r",?\s*company$",
+        r",?\s*co\.?$",
+        r",?\s*incorporated$",
+        r",?\s*limited$",
+        r",?\s*gmbh$",
+        r",?\s*plc\.?$",
+    ]
+
+    for suffix in suffixes_to_remove:
+        normalized = re.sub(suffix, "", normalized, flags=re.IGNORECASE)
+
+    # Remove extra whitespace and punctuation
+    normalized = re.sub(r"[^\w\s]", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+
+    return normalized
+
+
+def normalize_role(role: str) -> str:
+    """Normalize job role/title for fuzzy matching.
+
+    Handles variations like:
+    - "Software Engineer" vs "SWE" vs "Software Engineering"
+    - "Intern" vs "Internship"
+    - Case and whitespace differences
+
+    Args:
+        role: Raw role/title.
+
+    Returns:
+        Normalized role for comparison.
+    """
+    if not role:
+        return ""
+
+    # Convert to lowercase
+    normalized = role.lower().strip()
+
+    # Common abbreviation expansions
+    abbreviations = {
+        r"\bswe\b": "software engineer",
+        r"\bsde\b": "software development engineer",
+        r"\bml\b": "machine learning",
+        r"\bai\b": "artificial intelligence",
+        r"\bfe\b": "frontend",
+        r"\bbe\b": "backend",
+        r"\bqa\b": "quality assurance",
+        r"\bui\b": "user interface",
+        r"\bux\b": "user experience",
+    }
+
+    for abbrev, expansion in abbreviations.items():
+        normalized = re.sub(abbrev, expansion, normalized)
+
+    # Normalize intern/internship
+    normalized = re.sub(r"\binternship\b", "intern", normalized)
+
+    # Remove year references (e.g., "Summer 2026", "2025")
+    normalized = re.sub(r"\b(summer|fall|spring|winter)\s*\d{4}\b", "", normalized)
+    normalized = re.sub(r"\b20\d{2}\b", "", normalized)
+
+    # Remove extra whitespace
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+
+    return normalized
 
 
 class EmailMessage(BaseModel):

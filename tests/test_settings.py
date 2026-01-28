@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from config.settings import Settings
+from lazy_email.config import Settings
 
 if TYPE_CHECKING:
     from _pytest.capture import CaptureFixture

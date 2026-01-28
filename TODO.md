@@ -3,12 +3,12 @@
 ## Core features/what I hope to finish
 
 - [x] Project scaffold & configuration
-- [ ] Google OAuth authentication module
-- [ ] Gmail client with rate limiting
-- [ ] LLM extraction service (Qwen 2.5 3B via Ollama)
-- [ ] Google Sheets client with batching
-- [ ] State persistence & resume functionality
-- [ ] CLI entry point with `--since` flag
+- [x] Google OAuth authentication module
+- [x] Gmail client with rate limiting
+- [x] LLM extraction service (Qwen 2.5 3B via Ollama)
+- [x] Google Sheets client with batching
+- [x] State persistence & resume functionality
+- [x] CLI entry point with `--since` flag
 
 ## very low chance of happening
 

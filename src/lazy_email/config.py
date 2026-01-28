@@ -1,11 +1,13 @@
 """Application configuration management.
 
 This module handles loading configuration from environment variables
-with sensible defaults for all settings.
+with sensible defaults for all settings. Supports runtime overrides
+from CLI arguments.
 """
 
 import os
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 from pydantic import Field
@@ -115,7 +117,7 @@ class Settings(BaseSettings):
 
 
 # Global settings instance
-settings = Settings.from_env()
+_settings: Optional[Settings] = None
 
 
 def get_settings() -> Settings:
@@ -124,4 +126,41 @@ def get_settings() -> Settings:
     Returns:
         The global Settings instance.
     """
-    return settings
+    global _settings
+    if _settings is None:
+        _settings = Settings.from_env()
+    return _settings
+
+
+def update_settings(
+    spreadsheet_id: Optional[str] = None,
+    sheet_name: Optional[str] = None,
+    ollama_model: Optional[str] = None,
+) -> Settings:
+    """Update global settings with CLI overrides.
+
+    Args:
+        spreadsheet_id: Override spreadsheet ID from CLI.
+        sheet_name: Override sheet name from CLI.
+        ollama_model: Override Ollama model from CLI.
+
+    Returns:
+        Updated Settings instance.
+    """
+    global _settings
+    current = get_settings()
+
+    # Create new settings with overrides
+    _settings = Settings(
+        spreadsheet_id=spreadsheet_id or current.spreadsheet_id,
+        sheet_name=sheet_name or current.sheet_name,
+        ollama_model=ollama_model or current.ollama_model,
+        ollama_host=current.ollama_host,
+        gmail_requests_per_second=current.gmail_requests_per_second,
+        sheets_writes_per_minute=current.sheets_writes_per_minute,
+        sheets_batch_size=current.sheets_batch_size,
+        state_file_path=current.state_file_path,
+        credentials_path=current.credentials_path,
+        token_path=current.token_path,
+    )
+    return _settings
