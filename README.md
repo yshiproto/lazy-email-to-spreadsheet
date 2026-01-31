@@ -134,6 +134,7 @@ uv run lazy-email --since 2025-01-01 -v
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--since` | Process emails since this date (YYYY-MM-DD) | Required |
+| `--until` | Process emails until this date (YYYY-MM-DD, exclusive) | None |
 | `--spreadsheet-id` | Google Sheets URL or ID | Prompted if not set |
 | `--sheet-name` | Name of sheet tab to write to | Sheet1 |
 | `--model` | Ollama model to use | qwen2.5:3b |

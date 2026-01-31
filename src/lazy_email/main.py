@@ -125,6 +125,13 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--until",
+        type=validate_date,
+        default=None,
+        help="Process emails until this date (YYYY-MM-DD format, exclusive)",
+    )
+
+    parser.add_argument(
         "--spreadsheet-id",
         type=extract_spreadsheet_id,
         help="Google Sheets spreadsheet ID or full URL (can also paste the URL)",
@@ -387,7 +394,8 @@ def process_emails(
     sheets_client: SheetsClient,
     state_manager: StateManager,
     since_date: str,
-    max_emails: int,
+    until_date: Optional[str],
+    max_emails: Optional[int],
 ) -> None:
     """Main processing loop: fetch, extract, write.
 
@@ -396,14 +404,18 @@ def process_emails(
         extractor: LLM extractor.
         sheets_client: Sheets API client.
         state_manager: State manager for tracking.
-        since_date: Date filter for emails.
+        since_date: Start date filter for emails (inclusive).
+        until_date: End date filter for emails (exclusive).
         max_emails: Maximum emails to process.
     """
-    print_step(2, 4, f"Fetching emails since {since_date}...")
+    date_range = f"since {since_date}"
+    if until_date:
+        date_range += f" until {until_date}"
+    print_step(2, 4, f"Fetching emails {date_range}...")
 
     # Fetch emails
     try:
-        emails = gmail_client.fetch_messages(since_date=since_date, max_results=max_emails)
+        emails = gmail_client.fetch_messages(since_date=since_date, until_date=until_date, max_results=max_emails)
         print(f"  Found {len(emails)} emails in primary inbox")
     except GmailClientError as e:
         print(f"  ✗ Failed to fetch emails: {e}")
@@ -606,6 +618,7 @@ def main() -> int:
             sheets_client=sheets_client,
             state_manager=state_manager,
             since_date=args.since,
+            until_date=args.until,
             max_emails=args.max_emails,
         )
     except Exception as e:

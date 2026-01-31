@@ -248,14 +248,15 @@ class GmailClient:
                 raise
             raise GmailClientError(f"Failed to get message {message_id}: {e}") from e
 
-    def _build_query(self, since_date: Optional[str] = None) -> str:
+    def _build_query(self, since_date: Optional[str] = None, until_date: Optional[str] = None) -> str:
         """Build Gmail search query string.
 
         Args:
-            since_date: Optional date in YYYY-MM-DD format to filter emails.
+            since_date: Optional date in YYYY-MM-DD format to filter emails (inclusive).
+            until_date: Optional date in YYYY-MM-DD format to filter emails (exclusive).
 
         Returns:
-            Gmail query string (e.g., 'category:primary after:2025/12/01').
+            Gmail query string (e.g., 'category:primary after:2025/12/01 before:2025/12/31').
         """
         query_parts = ["category:primary"]
 
@@ -263,6 +264,11 @@ class GmailClient:
             # Convert YYYY-MM-DD to YYYY/MM/DD for Gmail query
             query_date = since_date.replace("-", "/")
             query_parts.append(f"after:{query_date}")
+
+        if until_date:
+            # Convert YYYY-MM-DD to YYYY/MM/DD for Gmail query
+            query_date = until_date.replace("-", "/")
+            query_parts.append(f"before:{query_date}")
 
         return " ".join(query_parts)
 
@@ -312,13 +318,18 @@ class GmailClient:
             raise GmailClientError(f"Missing required field in message: {e}") from e
 
     def fetch_messages(
-        self, since_date: Optional[str] = None, max_results: Optional[int] = None
+        self,
+        since_date: Optional[str] = None,
+        until_date: Optional[str] = None,
+        max_results: Optional[int] = None,
     ) -> list[EmailMessage]:
         """Fetch emails from primary inbox with optional date filter.
 
         Args:
             since_date: Optional date in YYYY-MM-DD format. Only emails
                        received on or after this date will be fetched.
+            until_date: Optional date in YYYY-MM-DD format. Only emails
+                       received before this date will be fetched (exclusive).
             max_results: Maximum number of emails to fetch. None = unlimited.
 
         Returns:
@@ -327,7 +338,7 @@ class GmailClient:
         Raises:
             GmailClientError: If fetching or parsing fails.
         """
-        query = self._build_query(since_date)
+        query = self._build_query(since_date, until_date)
 
         # List message IDs
         message_list = self._list_messages_with_retry(query, max_results)
