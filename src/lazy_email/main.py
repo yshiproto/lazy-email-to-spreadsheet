@@ -167,7 +167,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview emails without writing to sheet (future feature)",
+        help="Preview extracted data without writing to Google Sheets",
     )
 
     parser.add_argument(
@@ -268,11 +268,12 @@ def prompt_start_ollama() -> bool:
         return False
 
 
-def check_prerequisites(state_manager: StateManager) -> bool:
+def check_prerequisites(state_manager: StateManager, dry_run: bool = False) -> bool:
     """Check all prerequisites are met before processing.
 
     Args:
         state_manager: StateManager for resume detection.
+        dry_run: If True, skip Google Sheets connection check.
 
     Returns:
         True if all prerequisites pass, False otherwise.
@@ -298,18 +299,21 @@ def check_prerequisites(state_manager: StateManager) -> bool:
         print("\nFailed to verify Gmail access. Please re-authenticate.")
         return False
 
-    # Check Sheets connection
-    print("  • Verifying Google Sheets access...", end=" ", flush=True)
-    try:
-        sheets_client = SheetsClient()
-        if sheets_client.verify_connection():
-            pass  # Message already printed by verify_connection
-        else:
+    # Check Sheets connection (skip in dry-run mode)
+    if dry_run:
+        print("  • Skipping Google Sheets check (dry-run mode)")
+    else:
+        print("  • Verifying Google Sheets access...", end=" ", flush=True)
+        try:
+            sheets_client = SheetsClient()
+            if sheets_client.verify_connection():
+                pass  # Message already printed by verify_connection
+            else:
+                return False
+        except SheetsClientError as e:
+            print("✗")
+            print(f"\nSheets error: {e}")
             return False
-    except SheetsClientError as e:
-        print("✗")
-        print(f"\nSheets error: {e}")
-        return False
 
     # Check Ollama is running (with auto-start prompt)
     print("  • Checking Ollama...", end=" ", flush=True)
@@ -391,22 +395,24 @@ def handle_resume_prompt(state_manager: StateManager, since_date: str) -> bool:
 def process_emails(
     gmail_client: GmailClient,
     extractor: JobApplicationExtractor,
-    sheets_client: SheetsClient,
+    sheets_client: Optional[SheetsClient],
     state_manager: StateManager,
     since_date: str,
     until_date: Optional[str],
     max_emails: Optional[int],
+    dry_run: bool = False,
 ) -> None:
     """Main processing loop: fetch, extract, write.
 
     Args:
         gmail_client: Gmail API client.
         extractor: LLM extractor.
-        sheets_client: Sheets API client.
+        sheets_client: Sheets API client (None in dry-run mode).
         state_manager: State manager for tracking.
         since_date: Start date filter for emails (inclusive).
         until_date: End date filter for emails (exclusive).
         max_emails: Maximum emails to process.
+        dry_run: If True, print preview instead of writing to Sheets.
     """
     date_range = f"since {since_date}"
     if until_date:
@@ -425,18 +431,22 @@ def process_emails(
         print("  No emails to process.")
         return
 
-    # Filter out already processed
-    email_ids = [e.message_id for e in emails]
-    unprocessed_ids = set(state_manager.get_unprocessed(email_ids))
-    emails_to_process = [e for e in emails if e.message_id in unprocessed_ids]
+    # Filter out already processed (skip in dry-run mode)
+    if dry_run:
+        emails_to_process = emails
+        print("  Processing all emails (dry-run ignores state)...")
+    else:
+        email_ids = [e.message_id for e in emails]
+        unprocessed_ids = set(state_manager.get_unprocessed(email_ids))
+        emails_to_process = [e for e in emails if e.message_id in unprocessed_ids]
 
-    skipped = len(emails) - len(emails_to_process)
-    if skipped > 0:
-        print(f"  Skipping {skipped} already processed emails")
+        skipped = len(emails) - len(emails_to_process)
+        if skipped > 0:
+            print(f"  Skipping {skipped} already processed emails")
 
-    if not emails_to_process:
-        print("  All emails already processed.")
-        return
+        if not emails_to_process:
+            print("  All emails already processed.")
+            return
 
     print(f"  Processing {len(emails_to_process)} new emails...")
 
@@ -453,8 +463,9 @@ def process_emails(
             application = extractor.extract_from_email(email)
             applications.append(application)
 
-            # Mark as processed
-            state_manager.mark_processed(email.message_id)
+            # Mark as processed (skip in dry-run mode)
+            if not dry_run:
+                state_manager.mark_processed(email.message_id)
 
             print(f"✓ {application.company_name} - {application.role}")
 
@@ -463,10 +474,22 @@ def process_emails(
             # Still mark as processed to avoid retry loops
             state_manager.mark_processed(email.message_id)
 
-    print_step(4, 4, "Writing to Google Sheets...")
+    print_step(4, 4, "Writing to Google Sheets..." if not dry_run else "Preview (dry-run)...")
 
     if not applications:
         print("  No applications to write.")
+        return
+
+    # Dry-run: print preview table and return without writing
+    if dry_run:
+        print(f"\n  {'#':<4} {'Company Name':<35} {'Role':<40} {'Status'}")
+        print(f"  {'─'*4} {'─'*35} {'─'*40} {'─'*30}")
+        for i, app in enumerate(applications, 1):
+            company = app.company_name[:33] + ".." if len(app.company_name) > 35 else app.company_name
+            role = app.role[:38] + ".." if len(app.role) > 40 else app.role
+            print(f"  {i:<4} {company:<35} {role:<40} {app.status.value}")
+        print(f"\n  Total: {len(applications)} applications extracted")
+        print("  (No data was written to Google Sheets)")
         return
 
     # Import deduplication helpers
@@ -528,8 +551,9 @@ def process_emails(
     if updates_count > 0:
         print(f"  ✓ Updated {updates_count} existing rows")
 
-    # Final save
-    state_manager.save()
+    # Final save (skip in dry-run so the same emails can be re-processed)
+    if not dry_run:
+        state_manager.save()
 
 
 def main() -> int:
@@ -551,8 +575,8 @@ def main() -> int:
     settings = get_settings()
     spreadsheet_id = args.spreadsheet_id or settings.spreadsheet_id
 
-    # Prompt for spreadsheet ID if not provided
-    if not spreadsheet_id:
+    # Prompt for spreadsheet ID if not provided (skip in dry-run mode)
+    if not spreadsheet_id and not args.dry_run:
         print("📋 No spreadsheet ID configured.")
         print("   Paste your Google Sheets URL or spreadsheet ID below.")
         print("   (The ID is the long string in the URL between /d/ and /edit)\n")
@@ -591,13 +615,17 @@ def main() -> int:
     # Set since date
     state_manager.set_since_date(args.since)
 
-    # Handle resume prompt
-    if not handle_resume_prompt(state_manager, args.since):
-        print("Aborted.")
-        return 0
+    # Handle resume prompt (skip in dry-run mode)
+    if not args.dry_run:
+        if not handle_resume_prompt(state_manager, args.since):
+            print("Aborted.")
+            return 0
+
+    if args.dry_run:
+        print("Dry-run mode: results will be previewed, nothing written to Sheets\n")
 
     # Check prerequisites
-    if not check_prerequisites(state_manager):
+    if not check_prerequisites(state_manager, dry_run=args.dry_run):
         print("\n✗ Prerequisites check failed. Please fix the issues above.")
         return 1
 
@@ -605,7 +633,7 @@ def main() -> int:
     try:
         gmail_client = GmailClient()
         extractor = JobApplicationExtractor()
-        sheets_client = SheetsClient()
+        sheets_client = None if args.dry_run else SheetsClient()
     except Exception as e:
         print(f"\n✗ Failed to initialize: {e}")
         return 1
@@ -620,6 +648,7 @@ def main() -> int:
             since_date=args.since,
             until_date=args.until,
             max_emails=args.max_emails,
+            dry_run=args.dry_run,
         )
     except Exception as e:
         logger.exception("Unexpected error during processing")
@@ -631,14 +660,16 @@ def main() -> int:
     print("\n" + "=" * 60)
     print("  ✓ Processing complete!")
     print("=" * 60)
-    print(f"\n{state_manager.get_progress_summary()}")
+    if not args.dry_run:
+        print(f"\n{state_manager.get_progress_summary()}")
 
-    # Rename spreadsheet with current date
-    try:
-        sheets_client.rename_spreadsheet()
-        print("\n✓ Spreadsheet renamed with today's date.")
-    except Exception as e:
-        logger.warning(f"Could not rename spreadsheet: {e}")
+    # Rename spreadsheet with current date (skip in dry-run mode)
+    if not args.dry_run:
+        try:
+            sheets_client.rename_spreadsheet()
+            print("\n✓ Spreadsheet renamed with today's date.")
+        except Exception as e:
+            logger.warning(f"Could not rename spreadsheet: {e}")
 
     return 0
 

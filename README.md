@@ -125,6 +125,9 @@ uv run lazy-email --since 2025-01-01 --spreadsheet-id YOUR_ID --max-emails 200
 # Reset processing state and start fresh
 uv run lazy-email --since 2025-01-01 --spreadsheet-id YOUR_ID --reset
 
+# Preview extracted data without writing to Sheets
+uv run lazy-email --since 2025-01-01 --dry-run
+
 # Verbose logging
 uv run lazy-email --since 2025-01-01 -v
 ```
@@ -140,6 +143,7 @@ uv run lazy-email --since 2025-01-01 -v
 | `--model` | Ollama model to use | qwen2.5:3b |
 | `--max-emails` | Maximum emails to process | Unlimited |
 | `--reset` | Reset state and start fresh | - |
+| `--dry-run` | Preview extracted data without writing to Sheets | - |
 | `-v, --verbose` | Enable verbose logging | - |
 
 ## ⚠️ Important Notes

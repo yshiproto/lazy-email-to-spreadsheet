@@ -13,8 +13,8 @@
 ## very low chance of happening
 
 - [x] Duplicate detection (skip emails already in sheet)
-- [ ] `--until` date filter for date range queries
-- [ ] Dry-run preview mode
+- [x] `--until` date filter for date range queries
+- [x] Dry-run preview mode
 - [ ] Custom Gmail query filter via CLI
 - [ ] Multiple LLM backend support (llama.cpp, transformers)
 - [ ] Progress bar with estimated time remaining
