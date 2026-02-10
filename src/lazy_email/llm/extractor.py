@@ -268,6 +268,7 @@ class JobApplicationExtractor:
                     {"role": "user", "content": prompt},
                 ],
                 format="json",
+                options={"temperature": 0.1}
             )
             return response["message"]["content"]
         except ResponseError as e:
