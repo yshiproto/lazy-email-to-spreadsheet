@@ -128,6 +128,9 @@ uv run lazy-email --since 2025-01-01 --spreadsheet-id YOUR_ID --reset
 # Preview extracted data without writing to Sheets
 uv run lazy-email --since 2025-01-01 --dry-run
 
+# Use old print-based output for development/debugging
+uv run lazy-email --since 2025-01-01 --legacy-output
+
 # Verbose logging
 uv run lazy-email --since 2025-01-01 -v
 ```
@@ -144,6 +147,7 @@ uv run lazy-email --since 2025-01-01 -v
 | `--max-emails` | Maximum emails to process | Unlimited |
 | `--reset` | Reset state and start fresh | - |
 | `--dry-run` | Preview extracted data without writing to Sheets | - |
+| `--legacy-output` | Use the previous print-based output instead of progress bars | - |
 | `-v, --verbose` | Enable verbose logging | - |
 
 ## ⚠️ Important Notes
@@ -153,6 +157,9 @@ When downloading OAuth credentials from Google Cloud Console, the file will be n
 ```bash
 mv ~/Downloads/client_secret_*.json ./credentials.json
 ```
+
+### CLI Progress Output
+Normal runs show progress bars when the total amount of work is known and spinner/status indicators for phases with unknown duration. Use `--legacy-output` to restore the previous print-based output for development or debugging. Dry-run output stays stable for testing and preview purposes.
 
 ### Large Email Volumes
 Processing many emails can take significant time since each email requires an LLM call. Consider:

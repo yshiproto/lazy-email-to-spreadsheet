@@ -17,6 +17,6 @@
 - [x] Dry-run preview mode
 - [ ] Custom Gmail query filter via CLI
 - [ ] Multiple LLM backend support (llama.cpp, transformers)
-- [ ] Progress bar with estimated time remaining
+- [X] Progress bar with estimated time remaining
 - [ ] Configurable spreadsheet column mapping
 - [ ] Unit tests with full coverage

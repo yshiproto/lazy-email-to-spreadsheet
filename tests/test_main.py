@@ -22,7 +22,7 @@ sys.modules['tenacity'] = MagicMock()
 # Add src to path for testing without installation
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from lazy_email.main import (
+from lazy_email.main import (  # noqa: E402
     create_parser,
     extract_spreadsheet_id,
     print_banner,
@@ -124,10 +124,10 @@ class TestCreateParser:
         assert args.since == "2025-01-15"
 
     def test_max_emails_default(self):
-        """Test default max-emails value."""
+        """Test default max-emails value is unlimited."""
         parser = create_parser()
         args = parser.parse_args(["--since", "2025-01-01"])
-        assert args.max_emails == 100
+        assert args.max_emails is None
 
     def test_max_emails_custom(self):
         """Test custom max-emails value."""
@@ -237,13 +237,13 @@ class TestSignalHandlers:
         from lazy_email.main import setup_signal_handlers
 
         mock_state_manager = MagicMock()
-        
+
         # Store original handler
         original_handler = signal.getsignal(signal.SIGINT)
-        
+
         try:
             setup_signal_handlers(mock_state_manager)
-            
+
             # Check handler was changed
             new_handler = signal.getsignal(signal.SIGINT)
             assert new_handler != original_handler
@@ -266,7 +266,7 @@ class TestHandleResumePrompt:
         assert result is True
 
     @patch("builtins.input", return_value="y")
-    def test_resume_same_date_yes(self, mock_input):
+    def test_resume_same_date_yes(self, _mock_input):
         """Test user choosing to resume with same date."""
         from lazy_email.main import handle_resume_prompt
         from lazy_email.state import ProcessingState
@@ -284,7 +284,7 @@ class TestHandleResumePrompt:
         mock_state_manager.reset.assert_not_called()
 
     @patch("builtins.input", return_value="n")
-    def test_resume_same_date_no(self, mock_input):
+    def test_resume_same_date_no(self, _mock_input):
         """Test user choosing not to resume."""
         from lazy_email.main import handle_resume_prompt
         from lazy_email.state import ProcessingState
@@ -302,7 +302,7 @@ class TestHandleResumePrompt:
         mock_state_manager.reset.assert_called_once()
 
     @patch("builtins.input", return_value="3")
-    def test_different_date_abort(self, mock_input):
+    def test_different_date_abort(self, _mock_input):
         """Test user aborting when dates differ."""
         from lazy_email.main import handle_resume_prompt
         from lazy_email.state import ProcessingState
@@ -327,3 +327,200 @@ class TestGracefulExit:
 
         with pytest.raises(GracefulExit):
             raise GracefulExit()
+
+
+class TestProgressOutputFlags:
+    """Tests for progress-output CLI flags."""
+
+    def test_legacy_output_flag_default(self):
+        """Test --legacy-output is disabled by default."""
+        parser = create_parser()
+        args = parser.parse_args(["--since", "2025-01-01"])
+        assert args.legacy_output is False
+
+    def test_legacy_output_flag_enabled(self):
+        """Test --legacy-output flag."""
+        parser = create_parser()
+        args = parser.parse_args(["--since", "2025-01-01", "--legacy-output"])
+        assert args.legacy_output is True
+
+    def test_legacy_output_help_text(self):
+        """Test --legacy-output appears in help text."""
+        parser = create_parser()
+        assert "--legacy-output" in parser.format_help()
+
+
+class TestProgressReporter:
+    """Tests for the CLI progress reporter abstraction."""
+
+    def test_track_preserves_items(self):
+        """Test deterministic progress tracking yields every item exactly once."""
+        from lazy_email.cli_progress import OutputMode, ProgressReporter
+
+        reporter = ProgressReporter(OutputMode.DETERMINISTIC)
+        items = ["a", "b", "c"]
+
+        assert list(reporter.track(items, description="Testing", total=len(items))) == items
+
+    def test_status_does_not_swallow_exceptions(self):
+        """Test status contexts preserve exceptions from wrapped work."""
+        from lazy_email.cli_progress import OutputMode, ProgressReporter
+
+        reporter = ProgressReporter(OutputMode.DETERMINISTIC)
+
+        with pytest.raises(ValueError), reporter.status("Exploding"):
+            raise ValueError("boom")
+
+    def test_create_reporter_falls_back_when_rich_is_unavailable(self, monkeypatch):
+        """Test missing Rich degrades to deterministic output instead of crashing."""
+        import lazy_email.cli_progress as cli_progress
+
+        monkeypatch.setattr(cli_progress, "Console", None)
+        monkeypatch.setattr(cli_progress.sys.stdout, "isatty", lambda: True)
+
+        reporter = cli_progress.create_progress_reporter()
+
+        assert reporter.mode == cli_progress.OutputMode.DETERMINISTIC
+
+
+class TestProcessEmailsProgressBehavior:
+    """Tests for process_emails progress behavior and processing semantics."""
+
+    @staticmethod
+    def _email(message_id: str):
+        from lazy_email.models.email import EmailMessage
+
+        return EmailMessage(
+            message_id=message_id,
+            subject=f"Subject {message_id}",
+            content="content",
+            date_sent=datetime(2025, 1, 1),
+            email_link=f"https://mail.example/{message_id}",
+            sender="sender@example.com",
+        )
+
+    @staticmethod
+    def _application(company: str = "Acme", role: str = "Engineer"):
+        from lazy_email.models.email import ApplicationStatus, JobApplication
+
+        return JobApplication(
+            company_name=company,
+            role=role,
+            status=ApplicationStatus.SUBMITTED,
+            date_submitted="2025-01-01",
+            email_link="https://mail.example/msg",
+        )
+
+    def test_legacy_output_preserves_step_and_per_email_messages(self, capsys):
+        """Test legacy output keeps the old step and per-email processing UX."""
+        from lazy_email.cli_progress import ProgressReporter
+        from lazy_email.main import process_emails
+
+        email = self._email("msg1")
+        app = self._application()
+        gmail_client = MagicMock()
+        gmail_client.fetch_messages.return_value = [email]
+        extractor = MagicMock()
+        extractor.extract_from_email.return_value = app
+        sheets_client = MagicMock()
+        sheets_client.get_existing_applications.return_value = {}
+        sheets_client.append_rows.return_value = 1
+        state_manager = MagicMock()
+        state_manager.get_unprocessed.return_value = ["msg1"]
+
+        process_emails(
+            gmail_client=gmail_client,
+            extractor=extractor,
+            sheets_client=sheets_client,
+            state_manager=state_manager,
+            since_date="2025-01-01",
+            until_date=None,
+            max_emails=None,
+            dry_run=False,
+            reporter=ProgressReporter.legacy(),
+        )
+
+        captured = capsys.readouterr()
+        assert "[2/4] Fetching emails since 2025-01-01" in captured.out
+        assert "[1/1] Processing..." in captured.out
+        assert "✓ Acme - Engineer" in captured.out
+        state_manager.mark_processed.assert_called_once_with("msg1")
+        sheets_client.append_rows.assert_called_once_with([app])
+        state_manager.mark_written.assert_called_once_with(1)
+        state_manager.save.assert_called_once()
+
+    def test_dry_run_preserves_preview_and_skips_sheet_writes(self, capsys):
+        """Test dry-run keeps stable developer output and avoids sheet writes/save."""
+        from lazy_email.cli_progress import OutputMode, ProgressReporter
+        from lazy_email.main import process_emails
+
+        email = self._email("msg1")
+        app = self._application("ExampleCo", "Backend Engineer")
+        gmail_client = MagicMock()
+        gmail_client.fetch_messages.return_value = [email]
+        extractor = MagicMock()
+        extractor.extract_from_email.return_value = app
+        state_manager = MagicMock()
+
+        process_emails(
+            gmail_client=gmail_client,
+            extractor=extractor,
+            sheets_client=None,
+            state_manager=state_manager,
+            since_date="2025-01-01",
+            until_date=None,
+            max_emails=None,
+            dry_run=True,
+            reporter=ProgressReporter(OutputMode.MODERN),
+        )
+
+        captured = capsys.readouterr()
+        assert "[2/4] Fetching emails since 2025-01-01" in captured.out
+        assert "Processing all emails (dry-run ignores state)" in captured.out
+        assert "[1/1] Processing..." in captured.out
+        assert "Preview (dry-run)" in captured.out
+        assert "ExampleCo" in captured.out
+        assert "(No data was written to Google Sheets)" in captured.out
+        state_manager.save.assert_not_called()
+        state_manager.mark_written.assert_not_called()
+
+    def test_modern_progress_preserves_non_dry_run_processing_semantics(self):
+        """Test modern progress wrapping does not change core call conditions."""
+        from lazy_email.cli_progress import OutputMode, ProgressReporter
+        from lazy_email.main import process_emails
+
+        email = self._email("msg1")
+        app = self._application()
+        gmail_client = MagicMock()
+        gmail_client.fetch_messages.return_value = [email]
+        extractor = MagicMock()
+        extractor.extract_from_email.return_value = app
+        sheets_client = MagicMock()
+        sheets_client.get_existing_applications.return_value = {}
+        sheets_client.append_rows.return_value = 1
+        state_manager = MagicMock()
+        state_manager.get_unprocessed.return_value = ["msg1"]
+
+        process_emails(
+            gmail_client=gmail_client,
+            extractor=extractor,
+            sheets_client=sheets_client,
+            state_manager=state_manager,
+            since_date="2025-01-01",
+            until_date=None,
+            max_emails=None,
+            dry_run=False,
+            reporter=ProgressReporter(OutputMode.DETERMINISTIC),
+        )
+
+        gmail_client.fetch_messages.assert_called_once_with(
+            since_date="2025-01-01",
+            until_date=None,
+            max_results=None,
+        )
+        extractor.extract_from_email.assert_called_once_with(email)
+        state_manager.mark_processed.assert_called_once_with("msg1")
+        sheets_client.get_existing_applications.assert_called_once_with()
+        sheets_client.append_rows.assert_called_once_with([app])
+        state_manager.mark_written.assert_called_once_with(1)
+        state_manager.save.assert_called_once_with()

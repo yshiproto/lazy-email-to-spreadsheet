@@ -12,17 +12,18 @@ import subprocess
 import sys
 import time
 from datetime import datetime
-from typing import NoReturn, Optional
+from typing import NoReturn
 
-from lazy_email.config import get_settings, update_settings
 from lazy_email.auth.google_auth import (
     AuthenticationError,
     get_credentials,
     verify_authentication,
 )
+from lazy_email.cli_progress import ProgressReporter, create_progress_reporter
+from lazy_email.config import get_settings, update_settings
 from lazy_email.gmail.client import GmailClient, GmailClientError
 from lazy_email.llm.extractor import JobApplicationExtractor, LLMExtractorError
-from lazy_email.models.email import EmailMessage, JobApplication
+from lazy_email.models.email import JobApplication
 from lazy_email.sheets.client import SheetsClient, SheetsClientError
 from lazy_email.state import StateManager
 
@@ -48,7 +49,7 @@ def setup_signal_handlers(state_manager: StateManager) -> None:
         state_manager: StateManager to save on shutdown.
     """
 
-    def handle_signal(signum: int, frame: object) -> NoReturn:
+    def handle_signal(_signum: int, _frame: object) -> NoReturn:
         print("\n\n⚠ Interrupt received. Saving progress...")
         state_manager.save()
         print("✓ Progress saved. You can resume by running the command again.")
@@ -77,7 +78,7 @@ def validate_date(date_str: str) -> str:
     except ValueError:
         raise argparse.ArgumentTypeError(
             f"Invalid date format: '{date_str}'. Use YYYY-MM-DD (e.g., 2025-12-01)"
-        )
+        ) from None
 
 
 def extract_spreadsheet_id(value: str) -> str:
@@ -171,6 +172,12 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--legacy-output",
+        action="store_true",
+        help="Use the previous print-based output instead of progress bars",
+    )
+
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Enable verbose logging",
@@ -205,8 +212,8 @@ def check_ollama_running() -> bool:
     Returns:
         True if Ollama is responding, False otherwise.
     """
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     settings = get_settings()
     try:
@@ -217,39 +224,64 @@ def check_ollama_running() -> bool:
         return False
 
 
-def start_ollama() -> bool:
+def start_ollama(reporter: ProgressReporter | None = None) -> bool:
     """Start Ollama server in the background.
 
     Returns:
         True if Ollama started successfully, False otherwise.
     """
-    print("  Starting Ollama...", end=" ", flush=True)
+    reporter = reporter or ProgressReporter.legacy()
+    if reporter.uses_legacy_output:
+        print("  Starting Ollama...", end=" ", flush=True)
+        try:
+            # Start ollama serve in background
+            subprocess.Popen(
+                ["ollama", "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            # Wait for it to be ready
+            for _ in range(10):  # Wait up to 5 seconds
+                time.sleep(0.5)
+                if check_ollama_running():
+                    print("✓")
+                    return True
+            print("✗ (timeout)")
+            return False
+        except FileNotFoundError:
+            print("✗")
+            print("\n  Ollama is not installed. Please install it from https://ollama.ai")
+            return False
+        except Exception as e:
+            print(f"✗ ({e})")
+            return False
+
     try:
-        # Start ollama serve in background
-        subprocess.Popen(
-            ["ollama", "serve"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        # Wait for it to be ready
-        for _ in range(10):  # Wait up to 5 seconds
-            time.sleep(0.5)
-            if check_ollama_running():
-                print("✓")
-                return True
-        print("✗ (timeout)")
+        with reporter.status("Starting Ollama"):
+            subprocess.Popen(
+                ["ollama", "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            for _ in range(10):  # Wait up to 5 seconds
+                time.sleep(0.5)
+                if check_ollama_running():
+                    reporter.success("Ollama started")
+                    return True
+        reporter.failure("Ollama start timed out")
         return False
     except FileNotFoundError:
-        print("✗")
+        reporter.failure("Ollama is not installed")
         print("\n  Ollama is not installed. Please install it from https://ollama.ai")
         return False
     except Exception as e:
-        print(f"✗ ({e})")
+        reporter.failure(f"Could not start Ollama ({e})")
         return False
 
 
-def prompt_start_ollama() -> bool:
+def prompt_start_ollama(reporter: ProgressReporter | None = None) -> bool:
     """Prompt user to start Ollama if not running.
 
     Returns:
@@ -262,83 +294,147 @@ def prompt_start_ollama() -> bool:
     response = input("  Start Ollama automatically? (y/n): ").strip().lower()
 
     if response in ("y", "yes"):
-        return start_ollama()
+        return start_ollama(reporter)
     else:
         print("  Please start Ollama manually with: ollama serve")
         return False
 
 
-def check_prerequisites(state_manager: StateManager, dry_run: bool = False) -> bool:
+def check_prerequisites(
+    _state_manager: StateManager,
+    dry_run: bool = False,
+    reporter: ProgressReporter | None = None,
+) -> bool:
     """Check all prerequisites are met before processing.
 
     Args:
         state_manager: StateManager for resume detection.
         dry_run: If True, skip Google Sheets connection check.
+        reporter: Progress reporter controlling modern vs legacy output.
 
     Returns:
         True if all prerequisites pass, False otherwise.
     """
-    print_step(1, 4, "Checking prerequisites...")
+    reporter = reporter or ProgressReporter.legacy()
 
-    # Check Google authentication
-    print("  • Verifying Google authentication...", end=" ", flush=True)
+    if reporter.uses_legacy_output:
+        print_step(1, 4, "Checking prerequisites...")
+
+        # Check Google authentication
+        print("  • Verifying Google authentication...", end=" ", flush=True)
+        try:
+            get_credentials()
+            print("✓")
+        except AuthenticationError as e:
+            print("✗")
+            print(f"\n{e}")
+            return False
+
+        # Verify Gmail access
+        print("  • Testing Gmail access...", end=" ", flush=True)
+        if verify_authentication():
+            print("✓")
+        else:
+            print("✗")
+            print("\nFailed to verify Gmail access. Please re-authenticate.")
+            return False
+
+        # Check Sheets connection (skip in dry-run mode)
+        if dry_run:
+            print("  • Skipping Google Sheets check (dry-run mode)")
+        else:
+            print("  • Verifying Google Sheets access...", end=" ", flush=True)
+            try:
+                sheets_client = SheetsClient()
+                if sheets_client.verify_connection():
+                    pass  # Message already printed by verify_connection
+                else:
+                    return False
+            except SheetsClientError as e:
+                print("✗")
+                print(f"\nSheets error: {e}")
+                return False
+
+        # Check Ollama is running (with auto-start prompt)
+        print("  • Checking Ollama...", end=" ", flush=True)
+        if check_ollama_running():
+            print("✓ (running)")
+        else:
+            print("")  # newline before prompt
+            if not prompt_start_ollama(reporter):
+                return False
+
+        # Check LLM model
+        print("  • Verifying LLM model...", end=" ", flush=True)
+        try:
+            extractor = JobApplicationExtractor()
+            if extractor.verify_connection():
+                print("✓")
+            else:
+                return False
+        except LLMExtractorError as e:
+            print("✗")
+            print(f"\nLLM error: {e}")
+            return False
+
+        return True
+
+    reporter.step(1, 4, "Checking prerequisites...")
+
     try:
-        get_credentials()
-        print("✓")
+        with reporter.status("Verifying Google authentication"):
+            get_credentials()
+        reporter.success("Google authentication verified")
     except AuthenticationError as e:
-        print("✗")
+        reporter.failure("Google authentication failed")
         print(f"\n{e}")
         return False
 
-    # Verify Gmail access
-    print("  • Testing Gmail access...", end=" ", flush=True)
-    if verify_authentication():
-        print("✓")
+    with reporter.status("Testing Gmail access"):
+        gmail_ok = verify_authentication()
+    if gmail_ok:
+        reporter.success("Gmail access verified")
     else:
-        print("✗")
+        reporter.failure("Failed to verify Gmail access")
         print("\nFailed to verify Gmail access. Please re-authenticate.")
         return False
 
-    # Check Sheets connection (skip in dry-run mode)
     if dry_run:
-        print("  • Skipping Google Sheets check (dry-run mode)")
+        reporter.message("  • Skipping Google Sheets check (dry-run mode)")
     else:
-        print("  • Verifying Google Sheets access...", end=" ", flush=True)
         try:
-            sheets_client = SheetsClient()
-            if sheets_client.verify_connection():
-                pass  # Message already printed by verify_connection
-            else:
+            with reporter.status("Verifying Google Sheets access"):
+                sheets_client = SheetsClient()
+                sheets_ok = sheets_client.verify_connection()
+            if not sheets_ok:
                 return False
+            reporter.success("Google Sheets access verified")
         except SheetsClientError as e:
-            print("✗")
+            reporter.failure("Google Sheets access failed")
             print(f"\nSheets error: {e}")
             return False
 
-    # Check Ollama is running (with auto-start prompt)
-    print("  • Checking Ollama...", end=" ", flush=True)
-    if check_ollama_running():
-        print("✓ (running)")
-    else:
-        print("")  # newline before prompt
-        if not prompt_start_ollama():
-            return False
+    with reporter.status("Checking Ollama"):
+        ollama_running = check_ollama_running()
+    if ollama_running:
+        reporter.success("Ollama is running")
+    elif not prompt_start_ollama(reporter):
+        return False
 
-    # Check LLM model
-    print("  • Verifying LLM model...", end=" ", flush=True)
     try:
-        extractor = JobApplicationExtractor()
-        if extractor.verify_connection():
-            print("✓")
+        with reporter.status("Verifying LLM model"):
+            extractor = JobApplicationExtractor()
+            model_ok = extractor.verify_connection()
+        if model_ok:
+            reporter.success("LLM model verified")
         else:
             return False
     except LLMExtractorError as e:
-        print("✗")
+        reporter.failure("LLM model verification failed")
         print(f"\nLLM error: {e}")
         return False
 
     return True
-
 
 def handle_resume_prompt(state_manager: StateManager, since_date: str) -> bool:
     """Handle resume prompt for previous session.
@@ -395,12 +491,13 @@ def handle_resume_prompt(state_manager: StateManager, since_date: str) -> bool:
 def process_emails(
     gmail_client: GmailClient,
     extractor: JobApplicationExtractor,
-    sheets_client: Optional[SheetsClient],
+    sheets_client: SheetsClient | None,
     state_manager: StateManager,
     since_date: str,
-    until_date: Optional[str],
-    max_emails: Optional[int],
+    until_date: str | None,
+    max_emails: int | None,
     dry_run: bool = False,
+    reporter: ProgressReporter | None = None,
 ) -> None:
     """Main processing loop: fetch, extract, write.
 
@@ -413,15 +510,35 @@ def process_emails(
         until_date: End date filter for emails (exclusive).
         max_emails: Maximum emails to process.
         dry_run: If True, print preview instead of writing to Sheets.
+        reporter: Progress reporter controlling modern vs legacy output.
     """
+    reporter = reporter or ProgressReporter.legacy()
+    use_legacy_output = reporter.uses_legacy_output or dry_run
+
     date_range = f"since {since_date}"
     if until_date:
         date_range += f" until {until_date}"
-    print_step(2, 4, f"Fetching emails {date_range}...")
+
+    if use_legacy_output:
+        print_step(2, 4, f"Fetching emails {date_range}...")
+    else:
+        reporter.step(2, 4, f"Fetching emails {date_range}...")
 
     # Fetch emails
     try:
-        emails = gmail_client.fetch_messages(since_date=since_date, until_date=until_date, max_results=max_emails)
+        if use_legacy_output:
+            emails = gmail_client.fetch_messages(
+                since_date=since_date,
+                until_date=until_date,
+                max_results=max_emails,
+            )
+        else:
+            with reporter.status("Fetching emails from Gmail"):
+                emails = gmail_client.fetch_messages(
+                    since_date=since_date,
+                    until_date=until_date,
+                    max_results=max_emails,
+                )
         print(f"  Found {len(emails)} emails in primary inbox")
     except GmailClientError as e:
         print(f"  ✗ Failed to fetch emails: {e}")
@@ -450,14 +567,28 @@ def process_emails(
 
     print(f"  Processing {len(emails_to_process)} new emails...")
 
-    print_step(3, 4, "Extracting job application data...")
+    if use_legacy_output:
+        print_step(3, 4, "Extracting job application data...")
+    else:
+        reporter.step(3, 4, "Extracting job application data...")
 
     # Process each email
     applications: list[JobApplication] = []
+    email_iterator = enumerate(emails_to_process, 1)
+    if not use_legacy_output:
+        email_iterator = enumerate(
+            reporter.track(
+                emails_to_process,
+                description="Transferring job applications",
+                total=len(emails_to_process),
+            ),
+            1,
+        )
 
-    for i, email in enumerate(emails_to_process, 1):
+    for i, email in email_iterator:
         try:
-            print(f"  [{i}/{len(emails_to_process)}] Processing...", end=" ", flush=True)
+            if use_legacy_output:
+                print(f"  [{i}/{len(emails_to_process)}] Processing...", end=" ", flush=True)
 
             # Extract data
             application = extractor.extract_from_email(email)
@@ -467,14 +598,21 @@ def process_emails(
             if not dry_run:
                 state_manager.mark_processed(email.message_id)
 
-            print(f"✓ {application.company_name} - {application.role}")
+            if use_legacy_output:
+                print(f"✓ {application.company_name} - {application.role}")
 
         except LLMExtractorError as e:
             print(f"✗ Extraction failed: {e}")
             # Still mark as processed to avoid retry loops
             state_manager.mark_processed(email.message_id)
 
-    print_step(4, 4, "Writing to Google Sheets..." if not dry_run else "Preview (dry-run)...")
+    if not use_legacy_output:
+        reporter.success(f"Extracted {len(applications)} applications")
+
+    if use_legacy_output:
+        print_step(4, 4, "Writing to Google Sheets..." if not dry_run else "Preview (dry-run)...")
+    else:
+        reporter.step(4, 4, "Writing to Google Sheets...")
 
     if not applications:
         print("  No applications to write.")
@@ -496,13 +634,22 @@ def process_emails(
     from lazy_email.models.email import normalize_company_name, normalize_role, should_update_status
 
     # Fetch existing applications for deduplication
-    print("  Loading existing applications for deduplication...", end=" ", flush=True)
-    try:
-        existing_apps = sheets_client.get_existing_applications()
-        print(f"✓ ({len(existing_apps)} existing)")
-    except SheetsClientError as e:
-        print(f"✗ ({e})")
-        existing_apps = {}
+    if use_legacy_output:
+        print("  Loading existing applications for deduplication...", end=" ", flush=True)
+        try:
+            existing_apps = sheets_client.get_existing_applications()
+            print(f"✓ ({len(existing_apps)} existing)")
+        except SheetsClientError as e:
+            print(f"✗ ({e})")
+            existing_apps = {}
+    else:
+        try:
+            with reporter.status("Loading existing applications for deduplication"):
+                existing_apps = sheets_client.get_existing_applications()
+            reporter.success(f"Loaded {len(existing_apps)} existing applications")
+        except SheetsClientError as e:
+            reporter.failure(f"Could not load existing applications ({e})")
+            existing_apps = {}
 
     # Separate into new applications vs updates
     new_applications: list[JobApplication] = []
@@ -540,7 +687,11 @@ def process_emails(
     # Write only new applications
     if new_applications:
         try:
-            written = sheets_client.append_rows(new_applications)
+            if use_legacy_output:
+                written = sheets_client.append_rows(new_applications)
+            else:
+                with reporter.status("Adding new rows to Google Sheets"):
+                    written = sheets_client.append_rows(new_applications)
             state_manager.mark_written(written)
             print(f"  ✓ Added {written} new rows")
         except SheetsClientError as e:
@@ -555,7 +706,6 @@ def process_emails(
     if not dry_run:
         state_manager.save()
 
-
 def main() -> int:
     """Main entry point for CLI.
 
@@ -568,6 +718,11 @@ def main() -> int:
     # Configure logging level
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
+
+    reporter = create_progress_reporter(
+        legacy_output=args.legacy_output,
+        dry_run=args.dry_run,
+    )
 
     print_banner()
 
@@ -616,16 +771,15 @@ def main() -> int:
     state_manager.set_since_date(args.since)
 
     # Handle resume prompt (skip in dry-run mode)
-    if not args.dry_run:
-        if not handle_resume_prompt(state_manager, args.since):
-            print("Aborted.")
-            return 0
+    if not args.dry_run and not handle_resume_prompt(state_manager, args.since):
+        print("Aborted.")
+        return 0
 
     if args.dry_run:
         print("Dry-run mode: results will be previewed, nothing written to Sheets\n")
 
     # Check prerequisites
-    if not check_prerequisites(state_manager, dry_run=args.dry_run):
+    if not check_prerequisites(state_manager, dry_run=args.dry_run, reporter=reporter):
         print("\n✗ Prerequisites check failed. Please fix the issues above.")
         return 1
 
@@ -649,6 +803,7 @@ def main() -> int:
             until_date=args.until,
             max_emails=args.max_emails,
             dry_run=args.dry_run,
+            reporter=reporter,
         )
     except Exception as e:
         logger.exception("Unexpected error during processing")
@@ -666,7 +821,11 @@ def main() -> int:
     # Rename spreadsheet with current date (skip in dry-run mode)
     if not args.dry_run:
         try:
-            sheets_client.rename_spreadsheet()
+            if reporter.uses_legacy_output:
+                sheets_client.rename_spreadsheet()
+            else:
+                with reporter.status("Renaming spreadsheet"):
+                    sheets_client.rename_spreadsheet()
             print("\n✓ Spreadsheet renamed with today's date.")
         except Exception as e:
             logger.warning(f"Could not rename spreadsheet: {e}")

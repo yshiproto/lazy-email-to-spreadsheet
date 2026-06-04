@@ -79,9 +79,10 @@ logs/
 
 # uv
 .python-version
-uv.lock
 
 # copilot things
 instructions.md
-pyproject.toml
 missingRM.md
+.omx
+.omc
+.ruff_cache
