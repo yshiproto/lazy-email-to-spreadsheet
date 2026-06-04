@@ -10,7 +10,7 @@
 - [x] State persistence & resume functionality
 - [x] CLI entry point with `--since` flag
 
-## very low chance of happening
+## low chance of happening
 
 - [x] Duplicate detection (skip emails already in sheet)
 - [x] `--until` date filter for date range queries
@@ -19,4 +19,9 @@
 - [ ] Multiple LLM backend support (llama.cpp, transformers)
 - [X] Progress bar with estimated time remaining
 - [ ] Configurable spreadsheet column mapping
-- [ ] Unit tests with full coverage
+- [ ] remove Google Cloud setup
+- [ ] auto-create spreadsheet
+- [ ] first run wizard
+- [ ] publish
+- [ ] allow api hookup for non-local LLMs (if you don't care about privacy)
+- [ ] doctor cli option
