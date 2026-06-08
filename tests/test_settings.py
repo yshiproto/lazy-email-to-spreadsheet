@@ -67,4 +67,5 @@ def test_settings_defaults_when_env_missing(monkeypatch: "MonkeyPatch") -> None:
     assert settings.sheets_batch_size == 50
     assert settings.state_file_path == Path("processing_state.json")
     assert settings.credentials_path == Path("credentials.json")
-    assert settings.token_path == Path("token.json")
+    from platformdirs import user_config_dir
+    assert settings.token_path == Path(user_config_dir("lazy-email")) / "token.json"

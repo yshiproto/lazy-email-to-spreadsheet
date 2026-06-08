@@ -33,63 +33,13 @@ The tool writes to a Google Sheet with the following columns (template coming so
 
 - [uv](https://docs.astral.sh/uv/) (Python package manager - handles Python version automatically)
 - [Ollama](https://ollama.ai/) with Qwen 2.5 3B model or another equivalent model (recommend lightweight ones)
-- Google Cloud Project with Gmail and Sheets APIs enabled (see setup below)
-
-## Google Cloud Setup (One-Time, ~5 minutes)
-
-You need to create credentials so the tool can access your Gmail and Google Sheets. This is a one-time setup.
-
-### Step 1: Create a Google Cloud Project
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Click the project dropdown (top-left, next to "Google Cloud")
-3. Click **"New Project"**
-4. Name it something like `lazy-email` and click **Create**
-5. Make sure your new project is selected in the dropdown
-
-### Step 2: Enable the APIs
-
-1. Go to [APIs & Services > Library](https://console.cloud.google.com/apis/library)
-2. Search for **"Gmail API"** → Click it → Click **Enable**
-3. Search for **"Google Sheets API"** → Click it → Click **Enable**
-
-### Step 3: Configure OAuth Consent Screen
-
-1. Go to [APIs & Services > OAuth consent screen](https://console.cloud.google.com/apis/credentials/consent)
-2. Select **"External"** → Click **Create**
-3. Fill in the required fields:
-   - **App name**: `Lazy Email` (or whatever you want)
-   - **User support email**: Select your email
-   - **Developer contact email**: Enter your email
-4. Click **Save and Continue**
-5. On "Scopes" page, click **Save and Continue** (no changes needed)
-6. On "Test users" page, click **Add Users** → Enter your Gmail address → Click **Save and Continue**
-7. Click **Back to Dashboard**
-
-### Step 4: Create OAuth Credentials
-
-1. Go to [APIs & Services > Credentials](https://console.cloud.google.com/apis/credentials)
-2. Click **"+ Create Credentials"** → Select **"OAuth client ID"**
-3. Application type: **"Desktop app"**
-4. Name: `Lazy Email CLI` (or whatever)
-5. Click **Create**
-6. Click **"Download JSON"** (⬇ icon)
-7. **Move/rename the downloaded file** to your project folder as `credentials.json`:
-   ```bash
-   mv ~/Downloads/client_secret_*.json ./credentials.json
-   ```
-
-That's it! The first time you run the tool, a browser window will open asking you to authorize access to your Gmail and Sheets.
-
----
 
 ## Quick Start
 
 ```bash
 # Install uv if you don't have it
 curl -LsSf https://astral.sh/uv/install.sh | sh
-OR
-brew install uv
+# or: brew install uv
 
 # Clone and enter the project
 cd lazy-email-to-spreadsheet
@@ -97,15 +47,52 @@ cd lazy-email-to-spreadsheet
 # Install dependencies (uv handles Python 3.10+ automatically)
 uv sync
 
-# Pull the LLM model (first time only)
-ollama serve
-ollama pull qwen2.5:3b
+# Run the setup wizard (first time only)
+uv run lazy-email setup
 
-# Run with your spreadsheet URL - that's it!
+# Run!
 uv run lazy-email --since 2025-01-01 --spreadsheet-id "https://docs.google.com/spreadsheets/d/YOUR_ID/edit"
 ```
 
 If you don't provide `--spreadsheet-id`, the tool will prompt you to paste it interactively.
+
+### Setup Wizard
+
+`lazy-email setup` walks you through every prerequisite interactively:
+
+```
+[1/5] Google Authentication
+  ✓ Authenticated as you@gmail.com
+
+[2/5] Google Sheet
+  ✓ Spreadsheet configured: ABC123
+
+[3/5] Ollama
+  ✓ Ollama is running
+
+[4/5] LLM Model
+  ✗ Model qwen2.5:3b is not available.
+  Pull it now? [Y/n]: y
+  Pulling qwen2.5:3b...
+  ✓ Model qwen2.5:3b ready
+
+[5/5] Verify Connections
+  ✓ All connections verified
+```
+
+For Google Authentication, you'll need an OAuth credentials file:
+1. [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials
+2. Create OAuth client ID → Desktop app → Download JSON
+3. Save as `credentials.json` in the project folder (gitignored, never committed)
+
+Your auth token is saved at `~/.config/lazy-email/token.json` — you won't need to re-authenticate unless you revoke access.
+
+To re-authenticate at any time:
+```bash
+uv run lazy-email login --reauth
+```
+
+---
 
 ## Usage
 
@@ -151,12 +138,6 @@ uv run lazy-email --since 2025-01-01 -v
 | `-v, --verbose` | Enable verbose logging | - |
 
 ## ⚠️ Important Notes
-
-### Credentials File
-When downloading OAuth credentials from Google Cloud Console, the file will be named something like `client_secret_XXXXX.json`. You **must** rename it to exactly `credentials.json` and place it in your project root folder:
-```bash
-mv ~/Downloads/client_secret_*.json ./credentials.json
-```
 
 ### CLI Progress Output
 Normal runs show progress bars when the total amount of work is known and spinner/status indicators for phases with unknown duration. Use `--legacy-output` to restore the previous print-based output for development or debugging. Dry-run output stays stable for testing and preview purposes.

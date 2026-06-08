@@ -1,10 +1,22 @@
 """Google OAuth 2.0 authentication module.
 
-This module handles the OAuth 2.0 flow for Google APIs (Gmail and Sheets).
-It manages credentials.json and token.json files, providing user-friendly
-guidance through the authentication process.
+Authentication is split into two distinct flows:
+
+- ``lazy-email login`` — runs the OAuth browser consent flow and persists a
+  token to the platform config directory.
+- ``get_credentials()`` — loads the persisted token (raises
+  :class:`AuthenticationError` when the token is absent, directing the user
+  to run ``lazy-email setup`` or ``lazy-email login`` first).
+
+The OAuth credentials file is resolved in this order:
+
+1. ``CREDENTIALS_PATH`` env var → path to a credentials.json file
+2. ``credentials.json`` in the current working directory
 """
 
+from __future__ import annotations
+
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -17,97 +29,87 @@ from lazy_email.config import get_settings
 
 # OAuth 2.0 scopes required for the application
 SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",  # Read Gmail messages
-    "https://www.googleapis.com/auth/spreadsheets",  # Read/write Google Sheets
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/spreadsheets",
 ]
 
 
 class AuthenticationError(Exception):
     """Raised when authentication fails."""
 
-    pass
 
+def _get_credentials_path() -> Path:
+    """Resolve the OAuth credentials file path.
 
-def _print_setup_guide() -> None:
-    """Print user-friendly setup instructions for Google Cloud credentials.
+    Resolution order:
 
-    This guide walks users through creating OAuth credentials if they
-    haven't done so already.
-    """
-    print("\n" + "=" * 70)
-    print("GOOGLE CLOUD SETUP REQUIRED")
-    print("=" * 70)
-    print("\nYou need to set up Google Cloud credentials to use this tool.")
-    print("\nFollow these steps:")
-    print("\n1. Go to: https://console.cloud.google.com/")
-    print("2. Create a new project (or select an existing one)")
-    print("3. Enable the Gmail API and Google Sheets API:")
-    print("   - Navigate to 'APIs & Services' > 'Library'")
-    print("   - Search for 'Gmail API' and click 'Enable'")
-    print("   - Search for 'Google Sheets API' and click 'Enable'")
-    print("\n4. Create OAuth 2.0 credentials:")
-    print("   - Go to 'APIs & Services' > 'Credentials'")
-    print("   - Click 'Create Credentials' > 'OAuth client ID'")
-    print("   - Select 'Desktop app' as the application type")
-    print("   - Give it a name (e.g., 'Lazy Email Tool')")
-    print("   - Click 'Create'")
-    print("\n5. Download the credentials:")
-    print("   - Click the download button (⬇) next to your new OAuth client")
-    print("   - Save the file as 'credentials.json' in this directory:")
-    print(f"   {_get_credentials_file_path().parent}")
-    print("\n6. Re-run this command after saving credentials.json")
-    print("=" * 70 + "\n")
-
-
-def _get_credentials_file_path() -> Path:
-    """Get the path to the credentials.json file.
+    1. ``CREDENTIALS_PATH`` env var — explicit override (file must exist).
+    2. ``credentials.json`` in the current working directory.
 
     Returns:
-        Path to credentials.json file.
+        Path to the credentials.json file.
+
+    Raises:
+        AuthenticationError: If no credentials file is found.
     """
-    settings = get_settings()
-    return settings.credentials_path
+    credentials_path_env = os.environ.get("CREDENTIALS_PATH")
+    if credentials_path_env:
+        path = Path(credentials_path_env)
+        if path.exists():
+            return path
+        raise AuthenticationError(
+            f"CREDENTIALS_PATH is set but file not found: {path}"
+        )
+
+    cwd_creds = Path("credentials.json")
+    if cwd_creds.exists():
+        return cwd_creds
+
+    raise AuthenticationError(
+        "Google OAuth credentials not found.\n"
+        "Run 'lazy-email setup' to configure the tool, or place credentials.json "
+        "in the current directory (or set CREDENTIALS_PATH)."
+    )
 
 
 def _get_token_file_path() -> Path:
-    """Get the path to the token.json file.
+    """Return the path to the persisted OAuth token file."""
+    return get_settings().token_path
 
-    Returns:
-        Path to token.json file.
+
+def _migrate_legacy_token() -> None:
+    """Move a CWD ``token.json`` into the platform config dir (one-time).
+
+    Earlier versions stored ``token.json`` in the working directory. This
+    silently relocates it on the first run after upgrading so existing users
+    don't lose their session.
     """
-    settings = get_settings()
-    return settings.token_path
+    legacy = Path("token.json")
+    new_path = _get_token_file_path()
+    if legacy.resolve() == new_path.resolve():
+        return  # Same file — TOKEN_PATH env var override in effect
+    if legacy.exists() and not new_path.exists():
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        legacy.rename(new_path)
 
 
 def _load_existing_token() -> Optional[Credentials]:
-    """Load existing token from token.json if it exists.
-
-    Returns:
-        Credentials object if token exists and is valid, None otherwise.
-    """
+    """Load credentials from the token file if it exists."""
     token_path = _get_token_file_path()
     if not token_path.exists():
         return None
-
     try:
-        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
-        return creds
-    except Exception as e:
+        return Credentials.from_authorized_user_file(str(token_path), SCOPES)
+    except Exception as e:  # noqa: BLE001
         print(f"Warning: Could not load existing token: {e}")
         return None
 
 
 def _refresh_expired_credentials(creds: Credentials) -> Credentials:
-    """Refresh expired credentials using the refresh token.
-
-    Args:
-        creds: Expired credentials with a refresh token.
-
-    Returns:
-        Refreshed credentials.
+    """Refresh expired credentials using the stored refresh token.
 
     Raises:
-        AuthenticationError: If refresh fails.
+        AuthenticationError: If the refresh request fails.
     """
     try:
         creds.refresh(Request())
@@ -117,137 +119,120 @@ def _refresh_expired_credentials(creds: Credentials) -> Credentials:
 
 
 def _run_oauth_flow() -> Credentials:
-    """Run the OAuth 2.0 flow to obtain new credentials.
-
-    This opens a browser window for the user to authenticate and
-    authorize the application.
-
-    Returns:
-        New credentials obtained from OAuth flow.
+    """Open a browser window and run the OAuth consent flow.
 
     Raises:
-        AuthenticationError: If OAuth flow fails.
+        AuthenticationError: If credentials file is missing or the flow fails.
     """
-    creds_path = _get_credentials_file_path()
-
-    if not creds_path.exists():
-        _print_setup_guide()
-        raise AuthenticationError(
-            f"Credentials file not found: {creds_path}\n"
-            "Please follow the setup guide above."
-        )
-
+    creds_path = _get_credentials_path()
     try:
-        print("\n" + "=" * 70)
-        print("AUTHENTICATION REQUIRED")
-        print("=" * 70)
-        print("\nA browser window will open for you to:")
-        print("1. Sign in to your Google account")
-        print("2. Grant permission to access Gmail and Google Sheets")
-        print("\nThis is a one-time setup. Your credentials will be saved locally.")
-        print("=" * 70 + "\n")
-
         flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), SCOPES)
-        creds = flow.run_local_server(port=0)
-
-        print("\n✓ Authentication successful!")
-        return creds
+        return flow.run_local_server(port=0)
     except Exception as e:
         raise AuthenticationError(f"OAuth flow failed: {e}") from e
 
 
 def _save_credentials(creds: Credentials) -> None:
-    """Save credentials to token.json for future use.
-
-    Args:
-        creds: Credentials to save.
-    """
+    """Persist credentials to the token file."""
     token_path = _get_token_file_path()
     try:
+        token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json())
-        print(f"✓ Credentials saved to {token_path}")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"Warning: Could not save credentials: {e}")
 
 
-def get_credentials() -> Credentials:
-    """Get valid Google API credentials.
+def run_login_flow(reauth: bool = False) -> None:
+    """Run the browser-based OAuth login flow.
 
-    This function handles the complete OAuth flow:
-    1. Checks for existing token.json
-    2. Refreshes expired credentials if possible
-    3. Runs OAuth flow if needed (opens browser)
-    4. Saves new credentials for future use
+    Called by ``lazy-email login`` and ``lazy-email setup``. On success the
+    token is saved to the platform config directory so subsequent
+    :func:`get_credentials` calls succeed without user interaction.
+
+    Args:
+        reauth: When *True*, always run the full browser flow even if a valid
+            token already exists.
+    """
+    token_path = _get_token_file_path()
+
+    if not reauth and token_path.exists():
+        try:
+            creds = get_credentials()
+            if creds.valid:
+                print("✓ Already authenticated. Use --reauth to re-authenticate.")
+                return
+        except AuthenticationError:
+            pass  # Fall through to fresh flow
+
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    print("Opening browser for Google authentication...")
+    print("Grant access to Gmail (read) and Google Sheets (read/write).\n")
+    creds = _run_oauth_flow()
+    _save_credentials(creds)
+    print(f"✓ Authenticated successfully. Token saved to {token_path}")
+
+
+def get_credentials() -> Credentials:
+    """Return valid Google API credentials.
+
+    Loads the saved token and refreshes it if expired. Raises
+    :class:`AuthenticationError` when no token is present — the caller should
+    direct the user to run ``lazy-email setup`` or ``lazy-email login``.
 
     Returns:
-        Valid Credentials object ready for API calls.
+        A valid :class:`Credentials` object.
 
     Raises:
-        AuthenticationError: If authentication fails at any step.
+        AuthenticationError: If no token exists or the token cannot be
+            refreshed.
     """
-    # Try to load existing token
+    _migrate_legacy_token()
     creds = _load_existing_token()
 
-    # If no credentials or they're invalid, get new ones
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            # Refresh expired credentials
             print("Refreshing expired credentials...")
             creds = _refresh_expired_credentials(creds)
             _save_credentials(creds)
         else:
-            # Run full OAuth flow
-            creds = _run_oauth_flow()
-            _save_credentials(creds)
+            raise AuthenticationError(
+                "Not authenticated. Run 'lazy-email setup' or 'lazy-email login' "
+                "to authenticate."
+            )
 
     return creds
 
 
 def get_gmail_service() -> Resource:
-    """Get an authenticated Gmail API service.
-
-    Returns:
-        Gmail API service resource ready for API calls.
+    """Return an authenticated Gmail API service.
 
     Raises:
         AuthenticationError: If authentication fails.
     """
     try:
         creds = get_credentials()
-        service = build("gmail", "v1", credentials=creds)
-        return service
+        return build("gmail", "v1", credentials=creds)
     except Exception as e:
         raise AuthenticationError(f"Failed to build Gmail service: {e}") from e
 
 
 def get_sheets_service() -> Resource:
-    """Get an authenticated Google Sheets API service.
-
-    Returns:
-        Sheets API service resource ready for API calls.
+    """Return an authenticated Google Sheets API service.
 
     Raises:
         AuthenticationError: If authentication fails.
     """
     try:
         creds = get_credentials()
-        service = build("sheets", "v4", credentials=creds)
-        return service
+        return build("sheets", "v4", credentials=creds)
     except Exception as e:
         raise AuthenticationError(f"Failed to build Sheets service: {e}") from e
 
 
 def verify_authentication() -> bool:
-    """Verify that authentication is working correctly.
-
-    This performs a lightweight API call to check credentials.
-
-    Returns:
-        True if authentication is valid, False otherwise.
-    """
+    """Return *True* if the stored credentials can access Gmail."""
     try:
         service = get_gmail_service()
-        # Make a lightweight API call to verify access
         service.users().getProfile(userId="me").execute()
         return True
     except Exception:

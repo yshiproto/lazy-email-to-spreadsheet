@@ -19,9 +19,8 @@
 - [ ] Multiple LLM backend support (llama.cpp, transformers)
 - [X] Progress bar with estimated time remaining
 - [ ] Configurable spreadsheet column mapping
-- [ ] remove Google Cloud setup
 - [ ] auto-create spreadsheet
-- [ ] first run wizard
+- [X] first run wizard
 - [ ] publish
 - [ ] allow api hookup for non-local LLMs (if you don't care about privacy)
 - [ ] doctor cli option

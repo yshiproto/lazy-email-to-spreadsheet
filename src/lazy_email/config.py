@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
+from platformdirs import user_config_dir
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -79,11 +80,11 @@ class Settings(BaseSettings):
     # OAuth Paths
     credentials_path: Path = Field(
         default=Path("credentials.json"),
-        description="Path to OAuth credentials",
+        description="Path to BYOC OAuth credentials (advanced users only)",
     )
     token_path: Path = Field(
         default=Path("token.json"),
-        description="Path to OAuth token",
+        description="Path to OAuth token (default: platform config dir)",
     )
 
     class Config:
@@ -102,6 +103,10 @@ class Settings(BaseSettings):
         Returns:
             Settings instance with values loaded from environment.
         """
+        default_token_path = Path(
+            os.getenv("TOKEN_PATH")
+            or str(Path(user_config_dir("lazy-email")) / "token.json")
+        )
         return cls(
             spreadsheet_id=os.getenv("SPREADSHEET_ID", ""),
             sheet_name=os.getenv("SHEET_NAME", "Sheet1"),
@@ -112,7 +117,7 @@ class Settings(BaseSettings):
             sheets_batch_size=int(os.getenv("SHEETS_BATCH_SIZE", "50")),
             state_file_path=Path(os.getenv("STATE_FILE_PATH", "processing_state.json")),
             credentials_path=Path(os.getenv("CREDENTIALS_PATH", "credentials.json")),
-            token_path=Path(os.getenv("TOKEN_PATH", "token.json")),
+            token_path=default_token_path,
         )
 
 

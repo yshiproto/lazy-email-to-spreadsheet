@@ -706,12 +706,47 @@ def process_emails(
     if not dry_run:
         state_manager.save()
 
+def _handle_login_command(args: list[str]) -> int:
+    """Handle ``lazy-email login [--reauth]``."""
+    import argparse as _ap
+
+    parser = _ap.ArgumentParser(prog="lazy-email login")
+    parser.add_argument(
+        "--reauth",
+        action="store_true",
+        help="Force re-authentication even if already logged in",
+    )
+    parsed = parser.parse_args(args)
+
+    try:
+        from lazy_email.auth.google_auth import run_login_flow
+
+        run_login_flow(reauth=parsed.reauth)
+        return 0
+    except Exception as e:
+        print(f"✗ Login failed: {e}")
+        return 1
+
+
+def _handle_setup_command(_args: list[str]) -> int:
+    """Handle ``lazy-email setup``."""
+    from lazy_email.setup_wizard import run_setup_wizard
+
+    return run_setup_wizard()
+
+
 def main() -> int:
     """Main entry point for CLI.
 
     Returns:
         Exit code (0 for success, 1 for error).
     """
+    # Detect subcommands before full argparse to preserve backward compat
+    if len(sys.argv) >= 2 and sys.argv[1] == "login":
+        return _handle_login_command(sys.argv[2:])
+    if len(sys.argv) >= 2 and sys.argv[1] == "setup":
+        return _handle_setup_command(sys.argv[2:])
+
     parser = create_parser()
     args = parser.parse_args()
 
